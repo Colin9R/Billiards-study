@@ -2,7 +2,9 @@ package com.zhongba.engine
 
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.hypot
 import kotlin.math.sign
+import kotlin.math.sqrt
 
 enum class Motion { STATIONARY, SLIDING, ROLLING, POCKETED }
 
@@ -62,6 +64,10 @@ class Simulator(
     private val rails = buildRails()
     private val jaws = table.pockets.flatMap { listOf(it.jaws.first, it.jaws.second) }
     private val pocketLines = table.pockets.map { pocketLine(it) }
+
+    /** 库边接触点相对球心的仰角 θ：sinθ = h/R − 1。 */
+    private val cushionSin = table.cushionHeight / r - 1
+    private val cushionCos = sqrt(1 - cushionSin * cushionSin)
 
     fun simulate(layout: BallLayout, shot: Shot): SimulationResult {
         val dir = shot.direction.normalized()
@@ -285,10 +291,9 @@ class Simulator(
                 val n = (b.position - a.position).normalized()
                 val approach = (a.velocity - b.velocity).dot(n)
                 if (approach > 0) {
-                    // 等质量、无摩擦碰撞：只交换法向速度（含恢复系数），旋转不传递
-                    val impulse = n * ((1 + params.ballRestitution) / 2 * approach)
-                    states[kind.i] = classify(a.copy(velocity = a.velocity - impulse))
-                    states[kind.j] = classify(b.copy(velocity = b.velocity + impulse))
+                    val (a2, b2) = collide(a, b, n)
+                    states[kind.i] = classify(a2)
+                    states[kind.j] = classify(b2)
                 }
                 events += SimEvent(time, EventType.BALL_HIT, a.number, b.number, a.position)
                 events += SimEvent(time, EventType.BALL_HIT, b.number, a.number, b.position)
@@ -304,31 +309,123 @@ class Simulator(
     }
 
     /**
-     * 简化库边模型（接触点按与球心同高处理）：
-     * - 法向速度按恢复系数反弹；与法向运动对应的那部分高低杆旋转同样反向衰减；
-     * - 左右塞：接触点切向滑动速度 u = v·t̂ − ωz·R，库边摩擦冲量抵消它（不超过库仑摩擦上限），
-     *   同时改变切向速度和 ωz。这就是加塞后吃库角度变大/变小的来源。
-     * 真实库边的高度效应（Han 2005 / Mathavan 2010）留到后续版本。
+     * 等质量球-球碰撞，算法与 pooltool 的 FrictionalInelastic 相同（Alciatore TP A-5/A-6/A-14）：
+     * - 沿球心连线按恢复系数交换法向速度；
+     * - 两球接触点有相对滑动时，按库仑摩擦 μ·|Δv法向| 施加切向冲量，同时改变两球旋转——
+     *   这就是 throw（目标球被带偏）和"旋转传递"；
+     * - 如果这样算出的相对滑动反了向，说明接触点在碰撞中途就不再打滑，改用不打滑的解。
+     * 冲量产生的竖直速度分量直接丢掉（不模拟跳球），与 pooltool 一致。
+     */
+    private fun collide(a: BallState, b: BallState, n: Vec2): Pair<BallState, BallState> {
+        val e = params.ballRestitution
+        val t = zCross(n)
+        // 局部坐标：x 沿球心连线（a→b），y = ẑ×x，z 竖直向上
+        val v1 = V3(a.velocity.dot(n), a.velocity.dot(t), 0.0)
+        val v2 = V3(b.velocity.dot(n), b.velocity.dot(t), 0.0)
+        val w1 = V3(a.spin.dot(n), a.spin.dot(t), a.sideSpin)
+        val w2 = V3(b.spin.dot(n), b.spin.dot(t), b.sideSpin)
+
+        val v1n = 0.5 * ((1 - e) * v1.x + (1 + e) * v2.x)
+        val v2n = 0.5 * ((1 + e) * v1.x + (1 - e) * v2.x)
+
+        // 法向分量先拿掉，切向部分单独处理；绕连线的旋转不受影响
+        var v1t = v1.copy(x = 0.0)
+        var v2t = v2.copy(x = 0.0)
+        var w1t = w1.copy(x = 0.0)
+        var w2t = w2.copy(x = 0.0)
+
+        if (!params.ballFriction.isNone) {
+            val x = V3(1.0, 0.0, 0.0)
+            // 接触点（a 在 +x 侧，b 在 −x 侧）的相对滑动速度
+            fun contactSlip(va: V3, wa: V3, vb: V3, wb: V3) = (va + wa.cross(x) * r) - (vb - wb.cross(x) * r)
+            val slip0 = contactSlip(v1t, w1t, v2t, w2t)
+            val mu = params.ballFriction.coefficient(slip0.norm())
+            var dv = V3.ZERO
+            var dw = V3.ZERO
+            var sticks = slip0.norm() <= EPS_SPEED
+            if (!sticks) {
+                dv = slip0 * (-mu * abs(v2n - v1n) / slip0.norm())
+                dw = x.cross(dv) * (2.5 / r)
+                sticks = slip0.dot(contactSlip(v1t + dv, w1t + dw, v2t - dv, w2t + dw)) <= 0
+            }
+            if (sticks) {
+                dv = (v1t - v2t + (w1t + w2t).cross(x) * r) * (-1.0 / 7)
+                dw = (x.cross(v1t - v2t) * (1 / r) + w1t + w2t) * (-5.0 / 14)
+            }
+            v1t += dv
+            w1t += dw
+            v2t -= dv
+            w2t += dw
+        }
+
+        fun back(s: BallState, vn: Double, vt: V3, wn: Double, wt: V3) = s.copy(
+            velocity = n * vn + t * vt.y,
+            spin = n * wn + t * wt.y,
+            sideSpin = wt.z,
+            motion = Motion.SLIDING,
+        )
+        return back(a, v1n, v1t, w1.x, w1t) to back(b, v2n, v2t, w2.x, w2t)
+    }
+
+    /**
+     * 库边碰撞：Han 2005（"Dynamics in Carom and Three Cushion Billiards"），与 pooltool 的
+     * Han2005 实现相同。库边胶条和球的接触点高于球心（高度 [TableSpec.cushionHeight]），
+     * 所以碰库冲量不仅反弹法向速度，还会改变高低杆旋转：碰库前的上旋大部分留下来，
+     * 球出库后先打滑走弧线再转为滚动；左右塞通过库边摩擦改变出库角度。
+     * 接触点的滑动速度为 s，冲量 P：
+     * - 法向 PzE = (1+e)·|v法向|·cosθ；
+     * - 切向先假设"滑动到停住"（sticking）PxE,PyE = s/A；超过库仑摩擦 μ·PzE 则按 μ·PzE 沿 s 方向滑动。
+     * 竖直方向的冲量丢掉（不模拟跳球），与 pooltool 一致。
      */
     private fun bounce(states: MutableList<BallState>, i: Int, normal: Vec2, time: Double, events: MutableList<SimEvent>) {
         val s = states[i]
-        val vn = s.velocity.dot(normal)
-        if (vn < 0) {
-            val e = params.cushionRestitution
-            val tangent = zCross(normal)
-            // 单位质量冲量 j：Δv = j·t̂，ΔωZ = −5j/(2R)，接触点切向速度变化 3.5j
-            val slipT = s.velocity.dot(tangent) - s.sideSpin * r
-            val maxJ = params.cushionFriction * (1 + e) * -vn
-            val j = (-slipT / 3.5).coerceIn(-maxJ, maxJ)
-            states[i] = classify(
-                s.copy(
-                    velocity = s.velocity - normal * ((1 + e) * vn) + tangent * j,
-                    spin = s.spin - tangent * ((1 + e) * s.spin.dot(tangent)),
-                    sideSpin = s.sideSpin - 5 * j / (2 * r),
-                ),
-            )
-        }
+        if (s.velocity.dot(normal) < 0) states[i] = classify(han2005(s, normal))
         events += SimEvent(time, EventType.CUSHION, s.number, position = s.position)
+    }
+
+    private fun han2005(s: BallState, normal: Vec2): BallState {
+        // 库边坐标系：x 指向台外（球朝库边运动的方向），y = ẑ×x，z 竖直向上；单位质量
+        val ex = -normal
+        val ey = zCross(ex)
+        val vx = s.velocity.dot(ex)
+        val vy = s.velocity.dot(ey)
+        val wx = s.spin.dot(ex)
+        val wy = s.spin.dot(ey)
+        val wz = s.sideSpin
+
+        val e = params.cushionRestitution
+        val mu = params.cushionFriction
+        val sinA = cushionSin
+        val cosA = cushionCos
+
+        // Han 2005 式 14：接触点的滑动速度（竖直速度为 0）
+        val sx = vx * sinA + r * wy
+        val sy = -vy - r * wz * cosA + r * wx * sinA
+        val sNorm = hypot(sx, sy)
+        // 式 16、17、20：A = 7/(2m)，B = 1/m
+        val pzE = (1 + e) * vx * cosA
+        val (pxE, pyE) = if (sNorm / 3.5 <= mu * pzE) {
+            sx / 3.5 to sy / 3.5
+        } else {
+            mu * pzE * sx / sNorm to mu * pzE * sy / sNorm
+        }
+        // 式 21、22：冲量从接触点坐标系转回库边坐标系
+        val px = -pxE * sinA - pzE * cosA
+        val py = pyE
+        val pz = pxE * cosA - pzE * sinA
+        // 式 23：转动惯量 I = 2/5·R²（单位质量），R/I = 5/(2R)
+        val k = 5 / (2 * r)
+        val nvx = vx + px
+        val nvy = vy + py
+        val nwx = wx - k * py * sinA
+        val nwy = wy + k * (px * sinA - pz * cosA)
+        val nwz = wz + k * py * cosA
+        return s.copy(
+            velocity = ex * nvx + ey * nvy,
+            spin = ex * nwx + ey * nwy,
+            sideSpin = nwz,
+            motion = Motion.SLIDING,
+        )
     }
 
     // ---------- 台面几何 ----------
@@ -398,3 +495,17 @@ class Simulator(
 
 /** ẑ × a：把台面向量逆时针转 90°。 */
 internal fun zCross(a: Vec2) = Vec2(-a.y, a.x)
+
+/** 碰撞计算用的三维向量（台面 x、y 加竖直 z）。 */
+private data class V3(val x: Double, val y: Double, val z: Double) {
+    operator fun plus(o: V3) = V3(x + o.x, y + o.y, z + o.z)
+    operator fun minus(o: V3) = V3(x - o.x, y - o.y, z - o.z)
+    operator fun times(k: Double) = V3(x * k, y * k, z * k)
+    fun dot(o: V3) = x * o.x + y * o.y + z * o.z
+    fun cross(o: V3) = V3(y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x)
+    fun norm() = sqrt(dot(this))
+
+    companion object {
+        val ZERO = V3(0.0, 0.0, 0.0)
+    }
+}

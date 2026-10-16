@@ -13,14 +13,37 @@ data class PhysicsParams(
     val ballRestitution: Double = 0.95,
     /** 库边恢复系数。 */
     val cushionRestitution: Double = 0.85,
-    /** 库边与球之间的摩擦系数，决定左右塞对吃库角度的影响大小。 */
+    /** 库边与球之间的摩擦系数（Han 2005 模型里的 μ），决定旋转对出库角度的影响大小。 */
     val cushionFriction: Double = 0.2,
-    /** 侧旋（左右塞）在台呢上的衰减系数。 */
-    val spinFriction: Double = 0.044,
+    /**
+     * 侧旋（左右塞）在台呢上的衰减系数：dωz/dt = −5·μsp·g/(2R)。
+     * 取 pooltool 的默认值：它的 u_sp = 0.444·R（R 以米计）≈ 0.0127，角减速度约 10.9 rad/s²。
+     */
+    val spinFriction: Double = 0.0127,
+    /** 球与球之间的摩擦，产生 throw（目标球被带偏）并在两球之间传递旋转。 */
+    val ballFriction: BallFriction = BallFriction.ALCIATORE,
     val gravity: Double = 9810.0,
 ) {
     companion object {
         val DEFAULT = PhysicsParams()
+    }
+}
+
+/**
+ * 球-球摩擦系数 μ = a + b·e^(−c·v)，v 为两球接触点的相对滑动速度（米/秒）。
+ * 拟合曲线出自 Dr. Dave Alciatore 的 TP A-14，pooltool 默认也用它：低速时摩擦更大，throw 更明显。
+ */
+data class BallFriction(val a: Double, val b: Double, val c: Double) {
+    /** [slipSpeed] 单位毫米/秒。 */
+    fun coefficient(slipSpeed: Double): Double = a + b * kotlin.math.exp(-c * slipSpeed / 1000)
+
+    val isNone: Boolean get() = a == 0.0 && b == 0.0
+
+    companion object {
+        val ALCIATORE = BallFriction(a = 0.009951, b = 0.108, c = 1.088)
+
+        /** 无摩擦：只交换法向速度，旋转不传递。理论推导（30°、90° 法则）用这个。 */
+        val NONE = BallFriction(0.0, 0.0, 0.0)
     }
 }
 

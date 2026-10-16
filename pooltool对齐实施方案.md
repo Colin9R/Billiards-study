@@ -3,6 +3,19 @@
 > 版本 v0.1 · 2026-10-16 · 对应《实施方案.md》§3.5"精度保障"
 > 现状数据来自 `tools/validate/README.md` 和 `engine/build/reports/pooltool-comparison.txt`
 
+## 进度（2026-10-16）
+
+| 阶段 | 状态 | 结果 |
+|---|---|---|
+| 0 扩充基准数据 | ✅ 完成 | 540 个球形（切球 168、加塞切球 192、一库 180），三组对比数据：realistic、matched、han2005 |
+| 1 参数对齐 | ✅ 完成 | `spinFriction` 从 0.044 改成 0.0127；阶段 3 之后用加塞吃库球形验证通过 |
+| 2 球-球摩擦 | ✅ 完成 | `PhysicsParams.ballFriction`，默认用 Alciatore 曲线。realistic 组不吃库球形全部达标（之前 101 个超标），最大误差 0.03 mm / 0.09° |
+| 3 库边模型 | ✅ 完成 | 移植 Han 2005，加了 `TableSpec.cushionHeight`。和 pooltool 的 Han 2005 一致（没碰袋角的吃库球形全部 ≤ 1 cm / 1°）；和默认的 Stronge 比，一库出库方向差中位 0.23°、P90 1.7°，60% 的一库球形满足"≤ 1°、≤ 3 cm"。建议先不移植 Stronge，见 README |
+| 4 袋口几何 | 未开始 | 碰到袋角的球形两边会分开（pooltool 的袋角是圆弧、引擎是点），测试里只报告 |
+| 5 切换断言 | ✅ 完成 | 不吃库球形断言 realistic、matched 两组；吃库球形断言 han2005 组（碰袋角、进袋的除外） |
+
+详细数字见 `tools/validate/README.md`。
+
 ---
 
 ## 1. 目标

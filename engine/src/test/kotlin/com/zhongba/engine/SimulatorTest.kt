@@ -33,7 +33,7 @@ class SimulatorTest {
 
     /**
      * 用实施方案 §3.3 的速查表校验分离角（30° 切角）：
-     * 定杆 90°，自然滚动高杆 63.7°，全低杆 139.1°。恢复系数取 1 以对应理论推导。
+     * 定杆 90°，自然滚动高杆 63.7°，全低杆 139.1°。恢复系数取 1、球-球无摩擦，以对应理论推导。
      */
     @Test
     fun separationAnglesMatchTheoryAtHalfBall() {
@@ -58,7 +58,8 @@ class SimulatorTest {
         // 白球紧贴假想球出发，碰撞时的旋转就是出杆时的旋转
         val cue = ghost - aim * 0.01
         val layout = BallLayout(table, listOf(Ball(0, cue), Ball(1, ob)))
-        val elastic = PhysicsParams(ballRestitution = 1.0)
+        // 理论值按"完全弹性、无摩擦"推导，所以关掉球-球摩擦（否则有 throw）
+        val elastic = PhysicsParams(ballRestitution = 1.0, ballFriction = BallFriction.NONE)
         val result = Simulator(table, elastic).simulate(layout, Shot(aim, 400.0, tipOffset))
 
         val afterHit = result.events.dropWhile { !(it.type == EventType.BALL_HIT && it.ballNumber == 0) }

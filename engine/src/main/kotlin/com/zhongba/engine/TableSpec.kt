@@ -16,6 +16,11 @@ data class TableSpec(
     val sidePocketMouth: Double = 92.0,
     val railWidth: Double = 45.0,
     val frameWidth: Double = 110.0,
+    /**
+     * 库边胶条鼻尖（与球接触处）离台面的高度。高于球心，所以碰库会改变高低杆旋转。
+     * 默认取 pooltool 的值 0.64 × 球径；规则允许范围大约是球径的 62.5%–64.5%。
+     */
+    val cushionHeight: Double = 0.64 * 2 * ballRadius,
 ) {
     /** 开球线（头线）的 x 坐标：长边的 1/4 处。 */
     val headStringX: Double get() = length / 4
