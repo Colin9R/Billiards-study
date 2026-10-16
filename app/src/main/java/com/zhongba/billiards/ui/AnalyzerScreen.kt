@@ -27,13 +27,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zhongba.engine.AimAnalyzer
+import com.zhongba.engine.AimedShot
 import com.zhongba.engine.BallLayout
 import com.zhongba.engine.HitPoint
 import com.zhongba.engine.PositionPlanner
 import com.zhongba.engine.PowerLevels
-import com.zhongba.engine.Shot
 import com.zhongba.engine.SimulationResult
 import com.zhongba.engine.Simulator
+import com.zhongba.engine.simulateAimed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -56,19 +57,20 @@ fun AnalyzerScreen() {
         pocket?.let { AimAnalyzer.analyze(layout, targetNumber, it) }
     }
     val simulator = remember { Simulator(layout.table) }
-    // 球形、目标、击点或力度变化时，在后台模拟当前这一杆
-    val currentShot by produceState<SimulationResult?>(null, layout, aim, hitPoint, power) {
+    // 球形、目标、击点或力度变化时，在后台模拟当前这一杆（补偿 throw 后的瞄准）
+    val currentAimed by produceState<AimedShot?>(null, layout, aim, hitPoint, power) {
         val a = aim ?: run { value = null; return@produceState }
         value = withContext(Dispatchers.Default) {
-            simulator.simulate(layout, Shot(a.ghostBall - a.cuePosition, powerSpeed(power), hitPoint.y, hitPoint.x))
+            simulator.simulateAimed(layout, a, powerSpeed(power), hitPoint)
         }
     }
+    val currentShot = currentAimed?.result
     // 只有打开"叠加全部力度"才模拟 1–8 参考档
     val references by produceState<List<SimulationResult>>(emptyList(), layout, aim, hitPoint, showAllPowers) {
         val a = aim
         value = if (!showAllPowers || a == null) emptyList() else withContext(Dispatchers.Default) {
             (1..PowerLevels.count).map { level ->
-                simulator.simulate(layout, Shot(a.ghostBall - a.cuePosition, PowerLevels.speed(level), hitPoint.y, hitPoint.x))
+                simulator.simulateAimed(layout, a, PowerLevels.speed(level), hitPoint).result
             }
         }
     }
@@ -145,6 +147,7 @@ fun AnalyzerScreen() {
                 onShowAllPowersChange = { showAllPowers = it },
                 targetNumber = aim?.targetNumber,
                 result = currentShot,
+                throwCorrectionDeg = currentAimed?.throwCorrectionDeg,
             )
             HorizontalDivider(color = Color(0xFF3A3A3A))
             PositionSection(

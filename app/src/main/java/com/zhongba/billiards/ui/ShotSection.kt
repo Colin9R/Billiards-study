@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,6 +74,7 @@ fun ShotSection(
     onShowAllPowersChange: (Boolean) -> Unit,
     targetNumber: Int?,
     result: SimulationResult?,
+    throwCorrectionDeg: Double?,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("击打点与力度", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
@@ -110,6 +112,10 @@ fun ShotSection(
             Text("细线是 1–8 参考档，蓝到红 = 小到大；粗线为当前力度", color = Muted, fontSize = 12.sp, lineHeight = 16.sp)
         }
 
+        if (throwCorrectionDeg != null && abs(throwCorrectionDeg) >= 0.05) {
+            InfoRow("带偏修正", String.format(Locale.US, "多切 %.1f°", abs(throwCorrectionDeg)))
+            Text("两球碰撞的摩擦会把目标球往白球前进方向带偏（throw），瞄准时要多切这么多。", color = Muted, fontSize = 12.sp, lineHeight = 16.sp)
+        }
         if (result != null && targetNumber != null) {
             ShotOutcome(targetNumber, result)
         }

@@ -84,14 +84,14 @@ object PositionPlanner {
     }
 
     /**
-     * 扫描全部高低杆预设 × 力度（左右塞固定为 [side]），
+     * 扫描全部高低杆预设 × 力度（左右塞固定为 [side]），每一杆都补偿 throw；
      * 评分时用模拟后的真实球位（被碰动的球也算在内）。
      */
     fun scan(simulator: Simulator, layout: BallLayout, aim: AimResult, nextNumber: Int, side: Double = 0.0): List<Option> {
-        val direction = aim.ghostBall - aim.cuePosition
         return Stroke.entries.flatMap { stroke ->
             (1..PowerLevels.count).map { power ->
-                val result = simulator.simulate(layout, Shot(direction, PowerLevels.speed(power), stroke.tipOffset, side))
+                val hit = HitPoint(side, stroke.tipOffset)
+                val result = simulator.simulateAimed(layout, aim, PowerLevels.speed(power), hit).result
                 val success = result.firstContact == aim.targetNumber &&
                     aim.targetNumber in result.pocketed &&
                     0 !in result.pocketed &&
