@@ -19,6 +19,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 本地测试用：先用 debug 证书签名，方便直接装到手机上体验 release 性能；正式发布前换成自己的证书
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

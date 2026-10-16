@@ -66,7 +66,7 @@ class BallLayout(val table: TableSpec, val balls: List<Ball>) {
         private const val EPS = 1e-6
         private const val BISECT_STEPS = 20
 
-        /** 散开的练习球形，打开 App 时就能直接看瞄准分析。 */
+        /** 散开的练习球形：白球 + 1–7 号全色球 + 黑 8，打开 App 时就能直接看瞄准分析。 */
         fun practice(table: TableSpec = TableSpec.ZHONG_BA): BallLayout = BallLayout(
             table,
             listOf(
@@ -74,9 +74,34 @@ class BallLayout(val table: TableSpec, val balls: List<Ball>) {
                 Ball(1, Vec2(1900.0, 380.0)),
                 Ball(2, Vec2(700.0, 300.0)),
                 Ball(3, Vec2(1500.0, 950.0)),
+                Ball(4, Vec2(1250.0, 200.0)),
+                Ball(5, Vec2(400.0, 1000.0)),
+                Ball(6, Vec2(1750.0, 1100.0)),
+                Ball(7, Vec2(300.0, 450.0)),
                 Ball(8, Vec2(2200.0, 900.0)),
-                Ball(9, Vec2(1250.0, 200.0)),
-                Ball(12, Vec2(400.0, 1000.0)),
+            ),
+        )
+
+        /** 清台练习用的全台球形：15 颗彩球和黑 8 全部散开在台面上。 */
+        fun fullTable(table: TableSpec = TableSpec.ZHONG_BA): BallLayout = BallLayout(
+            table,
+            listOf(
+                Ball(0, Vec2(700.0, 640.0)),
+                Ball(1, Vec2(1900.0, 380.0)),
+                Ball(2, Vec2(700.0, 300.0)),
+                Ball(3, Vec2(1500.0, 950.0)),
+                Ball(4, Vec2(1250.0, 200.0)),
+                Ball(5, Vec2(400.0, 1000.0)),
+                Ball(6, Vec2(1750.0, 1100.0)),
+                Ball(7, Vec2(300.0, 450.0)),
+                Ball(8, Vec2(2200.0, 900.0)),
+                Ball(9, Vec2(1100.0, 700.0)),
+                Ball(10, Vec2(2000.0, 650.0)),
+                Ball(11, Vec2(480.0, 720.0)),
+                Ball(12, Vec2(1600.0, 500.0)),
+                Ball(13, Vec2(900.0, 1050.0)),
+                Ball(14, Vec2(2300.0, 300.0)),
+                Ball(15, Vec2(1300.0, 1150.0)),
             ),
         )
 

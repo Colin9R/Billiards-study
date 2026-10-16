@@ -39,7 +39,12 @@ data class SimulationResult(
     val paths: Map<Int, List<Vec2>>,
     val finalStates: List<BallState>,
     val events: List<SimEvent>,
+    /** 与 [paths] 一一对应的时刻（秒），用于按真实时间回放动画。 */
+    val pathTimes: Map<Int, List<Double>> = emptyMap(),
 ) {
+    /** 最后一颗球停下（或进袋）的时刻，秒。 */
+    val duration: Double get() = pathTimes.values.maxOfOrNull { it.last() } ?: 0.0
+
     val pocketed: List<Int> get() = events.filter { it.type == EventType.POCKETED }.map { it.ballNumber }
 
     /** 白球第一颗碰到的球号。 */
@@ -85,6 +90,7 @@ class Simulator(
         }.toMutableList()
 
         val paths = states.associate { it.number to mutableListOf(it.position) }
+        val times = states.associate { it.number to mutableListOf(0.0) }
         val events = mutableListOf<SimEvent>()
         var time = 0.0
 
@@ -93,15 +99,17 @@ class Simulator(
             if (moving.isEmpty() || time > MAX_TIME) break
             val next = findNextEvent(states, moving) ?: break
 
-            advance(states, moving, next.time, paths)
+            advance(states, moving, next.time, time, paths, times)
             time += next.time
             resolve(states, next, time, events)
         }
 
+        val movedBalls = paths.filterValues { it.size > 1 }.keys
         return SimulationResult(
-            paths = paths.filterValues { it.size > 1 },
+            paths = paths.filterKeys { it in movedBalls },
             finalStates = states.toList(),
             events = events,
+            pathTimes = times.filterKeys { it in movedBalls },
         )
     }
 
@@ -263,12 +271,29 @@ class Simulator(
 
     // ---------- 推进与事件处理 ----------
 
-    private fun advance(states: MutableList<BallState>, moving: List<Int>, dt: Double, paths: Map<Int, MutableList<Vec2>>) {
+    private fun advance(
+        states: MutableList<BallState>,
+        moving: List<Int>,
+        dt: Double,
+        startTime: Double,
+        paths: Map<Int, MutableList<Vec2>>,
+        times: Map<Int, MutableList<Double>>,
+    ) {
         for (i in moving) {
             val s = states[i]
             val path = paths.getValue(s.number)
+            val pathTimes = times.getValue(s.number)
+            // 之前一直静止的球：先记下"静止到此刻"，回放时不会在被碰之前就慢慢挪动
+            if (pathTimes.last() < startTime) {
+                path += s.position
+                pathTimes += startTime
+            }
             val steps = ceil(s.velocity.length() * dt / PATH_STEP_MM).toInt().coerceIn(1, 400)
-            for (k in 1..steps) path += evolve(s, dt * k / steps).position
+            for (k in 1..steps) {
+                val t = dt * k / steps
+                path += evolve(s, t).position
+                pathTimes += startTime + t
+            }
             states[i] = evolve(s, dt)
         }
     }
@@ -317,16 +342,23 @@ class Simulator(
      * 冲量产生的竖直速度分量直接丢掉（不模拟跳球），与 pooltool 一致。
      */
     private fun collide(a: BallState, b: BallState, n: Vec2): Pair<BallState, BallState> {
-        val e = params.ballRestitution
         val t = zCross(n)
         // 局部坐标：x 沿球心连线（a→b），y = ẑ×x，z 竖直向上
         val v1 = V3(a.velocity.dot(n), a.velocity.dot(t), 0.0)
         val v2 = V3(b.velocity.dot(n), b.velocity.dot(t), 0.0)
+        val e = params.ballRestitution
         val w1 = V3(a.spin.dot(n), a.spin.dot(t), a.sideSpin)
         val w2 = V3(b.spin.dot(n), b.spin.dot(t), b.sideSpin)
 
-        val v1n = 0.5 * ((1 - e) * v1.x + (1 + e) * v2.x)
-        val v2n = 0.5 * ((1 + e) * v1.x + (1 - e) * v2.x)
+        var v1n = 0.5 * ((1 - e) * v1.x + (1 + e) * v2.x)
+        var v2n = 0.5 * ((1 + e) * v1.x + (1 - e) * v2.x)
+        // 球堆里贴着的球相对速度极小时，保证碰后至少以很小的速度分开（动量守恒），
+        // 否则两球会在同一瞬间以越来越小的速度反复微碰撞，事件数爆炸
+        if (v2n - v1n < MIN_SEPARATION_SPEED) {
+            val mean = (v1n + v2n) / 2
+            v1n = mean - MIN_SEPARATION_SPEED / 2
+            v2n = mean + MIN_SEPARATION_SPEED / 2
+        }
 
         // 法向分量先拿掉，切向部分单独处理；绕连线的旋转不受影响
         var v1t = v1.copy(x = 0.0)
@@ -484,7 +516,10 @@ class Simulator(
     private fun Motion.isMoving() = this == Motion.SLIDING || this == Motion.ROLLING
 
     companion object {
-        private const val MAX_EVENTS = 500
+        private const val MAX_EVENTS = 1000
+
+        /** 碰后两球沿连线分开的最小相对速度，毫米/秒。 */
+        private const val MIN_SEPARATION_SPEED = 5.0
         private const val MAX_TIME = 120.0
         private const val EPS_SPEED = 1e-3
         private const val EPS_TIME = 1e-9

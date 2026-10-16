@@ -14,12 +14,44 @@ object PositionPlanner {
     private const val HARD_CUT_DEG = 70.0
 
     /** 白球离目标球在这个距离以内不扣分，毫米。 */
-    private const val NEAR_MM = 600.0
-    private const val FAR_MM = 2500.0
-    private const val FAR_FACTOR = 0.6
+    private const val NEAR_MM = 400.0
+    private const val FAR_MM = 1800.0
+    private const val FAR_FACTOR = 0.45
+
+    /** 目标球离袋口在这个距离内不扣分；越远越难（长台），毫米。 */
+    private const val OB_NEAR_MM = 500.0
+    private const val OB_FAR_MM = 1800.0
+    private const val OB_FAR_FACTOR = 0.8
 
     /** 袋口容错达到这个角度视为满分，度。 */
     private const val GOOD_MARGIN_DEG = 1.5
+
+    /**
+     * 一杆本身的难易度，0（进不了）到 1（很舒服）：切角越小、袋口容错越大、白球离目标球越近越好打；
+     * 白球贴库或离库太近时只能架高杆、出杆受限，难度加倍。
+     */
+    fun shotEase(aim: AimResult, table: TableSpec): Double {
+        if (!aim.isPottable) return 0.0
+        val distance = aim.cuePosition.distanceTo(aim.ghostBall)
+        // 长台：白球离目标球、目标球离袋口都是越远越难，业余球手尽量避免
+        val distanceFactor = 1 - (1 - FAR_FACTOR) * ((distance - NEAR_MM) / (FAR_MM - NEAR_MM)).coerceIn(0.0, 1.0)
+        val objectBall = aim.ghostBall + aim.objectDirection * (2 * table.ballRadius)
+        val obDistance = objectBall.distanceTo(aim.pocket.center)
+        val obFactor = 1 - (1 - OB_FAR_FACTOR) * ((obDistance - OB_NEAR_MM) / (OB_FAR_MM - OB_NEAR_MM)).coerceIn(0.0, 1.0)
+        val cut = 1 - ((aim.cutAngleDeg - EASY_CUT_DEG) / (HARD_CUT_DEG - EASY_CUT_DEG)).coerceIn(0.0, 1.0)
+        // 袋口容错（瞄准允许的偏差）权重加大：容错小的球即使切角不大也算难
+        val margin = 0.3 + 0.7 * (aim.marginDeg / GOOD_MARGIN_DEG).coerceAtMost(1.0)
+        return cut * margin * distanceFactor * obFactor * railFactor(aim.cuePosition, table)
+    }
+
+    /** 白球离库边（球面到库边）的空隙超过这个距离就不受影响，毫米。 */
+    private const val RAIL_CLEAR_MM = 150.0
+
+    /** 白球贴库为 0.5，离库 [RAIL_CLEAR_MM] 以上为 1，中间线性。 */
+    private fun railFactor(cue: Vec2, table: TableSpec): Double {
+        val gap = minOf(cue.x, table.length - cue.x, cue.y, table.width - cue.y) - table.ballRadius
+        return 0.5 + 0.5 * (gap / RAIL_CLEAR_MM).coerceIn(0.0, 1.0)
+    }
 
     /**
      * 白球在 [cue] 时打 [nextNumber] 号球的难易度，0（打不进）到 1（很舒服）。
@@ -29,20 +61,10 @@ object PositionPlanner {
         val r = layout.table.ballRadius
         val others = layout.balls.filter { !it.isCue }
         if (others.any { it.position.distanceTo(cue) < 2 * r }) return 0.0
+        if (others.none { it.number == nextNumber }) return 0.0
         val withCue = BallLayout(layout.table, listOf(Ball(0, cue)) + others)
-        val next = others.firstOrNull { it.number == nextNumber } ?: return 0.0
-        val distance = cue.distanceTo(next.position)
-        val distanceFactor = 1 - (1 - FAR_FACTOR) * ((distance - NEAR_MM) / (FAR_MM - NEAR_MM)).coerceIn(0.0, 1.0)
-
         return layout.table.pockets.indices.maxOf { pocket ->
-            val aim = AimAnalyzer.analyze(withCue, nextNumber, pocket)
-            if (aim == null || !aim.isPottable) {
-                0.0
-            } else {
-                val cut = 1 - ((aim.cutAngleDeg - EASY_CUT_DEG) / (HARD_CUT_DEG - EASY_CUT_DEG)).coerceIn(0.0, 1.0)
-                val margin = 0.5 + 0.5 * (aim.marginDeg / GOOD_MARGIN_DEG).coerceAtMost(1.0)
-                cut * margin * distanceFactor
-            }
+            AimAnalyzer.analyze(withCue, nextNumber, pocket)?.let { shotEase(it, layout.table) } ?: 0.0
         }
     }
 

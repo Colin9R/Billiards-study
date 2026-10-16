@@ -38,7 +38,8 @@ import com.zhongba.engine.Vec2
 /**
  * 俯视台面：画中八球台和球，并支持手指拖动任意球；点球选目标球，点袋口选袋。
  * [aim] 不为空时叠加瞄准线、假想球、目标球路线和定杆切线；
- * [preview] 不为空时叠加当前力度下白球的走位线和停点。
+ * [preview] 不为空时叠加当前力度下白球的走位线和停点；
+ * [runOut] 不为空时叠加清台路线（击球顺序、每一杆白球走位和停点）。
  * 台面坐标（毫米）与屏幕像素之间的换算见 [TableTransform]。
  */
 @Composable
@@ -49,6 +50,9 @@ fun TableView(
     heatMap: PositionPlanner.HeatMap?,
     scanOptions: List<PositionPlanner.Option>?,
     nextNumber: Int?,
+    runOut: RunOutView?,
+    animation: AnimationFrame?,
+    onSkipAnimation: () -> Unit,
     onMoveBall: (number: Int, target: Vec2) -> Unit,
     onTapBall: (number: Int) -> Unit,
     onTapPocket: (index: Int) -> Unit,
@@ -61,6 +65,8 @@ fun TableView(
     val currentOnTapBall by rememberUpdatedState(onTapBall)
     val currentOnTapPocket by rememberUpdatedState(onTapPocket)
     val currentOnLongPress by rememberUpdatedState(onLongPressBall)
+    val currentAnimating by rememberUpdatedState(animation != null)
+    val currentOnSkip by rememberUpdatedState(onSkipAnimation)
     var dragging by remember { mutableStateOf<Int?>(null) }
     val currentAim by rememberUpdatedState(aim)
     val currentPreview by rememberUpdatedState(preview)
@@ -79,6 +85,11 @@ fun TableView(
                             ?.let { currentOnLongPress(it.number) }
                     },
                 ) { tap ->
+                    // 动画播放中点台面任意处 = 跳过动画
+                    if (currentAnimating) {
+                        currentOnSkip()
+                        return@detectTapGestures
+                    }
                     val t = transformRef[0] ?: return@detectTapGestures
                     val p = t.toTable(tap)
                     val ball = currentLayout.ballAt(p, slop = t.toTableLength(TOUCH_SLOP_PX))
@@ -107,6 +118,7 @@ fun TableView(
             var grabOffset = Vec2.ZERO
             detectDragGestures(
                 onDragStart = { start ->
+                    if (currentAnimating) return@detectDragGestures
                     val t = transformRef[0] ?: return@detectDragGestures
                     val p = t.toTable(start)
                     val ball = currentLayout.ballAt(p, slop = t.toTableLength(TOUCH_SLOP_PX))
@@ -127,6 +139,11 @@ fun TableView(
     ) {
         val t = TableTransform(layout.table, size).also { transformRef[0] = it }
         drawTable(t)
+        if (animation != null) {
+            // 播放中只画动画：球按物理引擎的轨迹滚动，不画分析线和路线
+            drawAnimationFrame(t, animation, textMeasurer)
+            return@Canvas
+        }
         aim?.let {
             // 只在台呢范围内画线，定杆切线等不会穿出库边
             val topLeft = t.toScreen(Vec2.ZERO)
@@ -137,7 +154,13 @@ fun TableView(
                 preview?.let { p -> drawPreviewPaths(t, p) }
             }
         }
+        runOut?.let {
+            val topLeft = t.toScreen(Vec2.ZERO)
+            val bottomRight = t.toScreen(Vec2(layout.table.length, layout.table.width))
+            clipRect(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y) { drawRunOutPaths(t, it) }
+        }
         layout.balls.forEach { drawBall(t, it, textMeasurer, highlighted = it.number == dragging) }
+        runOut?.let { drawRunOutBadges(t, it, layout, textMeasurer) }
         aim?.let { drawAimMarkers(t, it) }
         preview?.let { drawStopMarkers(t, it) }
         scanOptions?.let { drawScanStops(t, it) }
@@ -328,7 +351,7 @@ private fun DrawScope.drawNextBallRing(t: TableTransform, ball: Ball) {
     )
 }
 
-private fun DrawScope.drawPolyline(t: TableTransform, points: List<Vec2>, color: Color, width: Float, effect: PathEffect? = null) {
+internal fun DrawScope.drawPolyline(t: TableTransform, points: List<Vec2>, color: Color, width: Float, effect: PathEffect? = null) {
     if (points.size < 2) return
     val path = Path().apply {
         val first = t.toScreen(points.first())
@@ -387,37 +410,59 @@ private fun ballColor(number: Int): Color = when ((number - 1) % 8 + 1) {
     else -> Color(0xFF111111)
 }
 
-private fun DrawScope.drawBall(t: TableTransform, ball: Ball, textMeasurer: TextMeasurer, highlighted: Boolean) {
+/**
+ * 画一颗球。[rolled] 为滚过的距离（毫米）、[heading] 为滚动方向：号码圈会沿滚动方向转到球的侧面再转回来，
+ * 球的两面都印有号码，所以总有一面朝上；[sinking] 为落袋进度 0–1，球逐渐缩小变暗。
+ */
+internal fun DrawScope.drawBall(
+    t: TableTransform,
+    ball: Ball,
+    textMeasurer: TextMeasurer,
+    highlighted: Boolean,
+    rolled: Double = 0.0,
+    heading: Vec2 = Vec2(1.0, 0.0),
+    sinking: Double = 0.0,
+) {
     val c = t.toScreen(ball.position)
-    val r = t.toScreen(t.table.ballRadius)
+    val r = t.toScreen(t.table.ballRadius) * (1 - 0.6f * sinking.toFloat())
+    val fade = 1 - 0.7f * sinking.toFloat()
 
     // 阴影
-    drawCircle(Color.Black.copy(alpha = 0.35f), radius = r, center = c + Offset(r * 0.15f, r * 0.2f))
+    drawCircle(Color.Black.copy(alpha = 0.35f * fade), radius = r, center = c + Offset(r * 0.15f, r * 0.2f))
 
     when {
-        ball.isCue -> drawCircle(Color(0xFFF7F4EA), radius = r, center = c)
+        ball.isCue -> drawCircle(Color(0xFFF7F4EA).copy(alpha = fade), radius = r, center = c)
         ball.isStripe -> {
-            drawCircle(Color(0xFFF7F4EA), radius = r, center = c)
+            drawCircle(Color(0xFFF7F4EA).copy(alpha = fade), radius = r, center = c)
             clipRect(top = c.y - r * 0.55f, bottom = c.y + r * 0.55f) {
-                drawCircle(ballColor(ball.number), radius = r, center = c)
+                drawCircle(ballColor(ball.number).copy(alpha = fade), radius = r, center = c)
             }
         }
-        else -> drawCircle(ballColor(ball.number), radius = r, center = c)
+        else -> drawCircle(ballColor(ball.number).copy(alpha = fade), radius = r, center = c)
     }
 
-    if (!ball.isCue) {
-        drawCircle(Color.White, radius = r * 0.45f, center = c)
-        val label = textMeasurer.measure(
-            ball.number.toString(),
-            TextStyle(color = Color.Black, fontSize = (r * 0.5f / density).sp, fontWeight = FontWeight.Bold),
-        )
-        drawText(label, topLeft = c - Offset(label.size.width / 2f, label.size.height / 2f))
+    // 滚动：号码圈（白球为红点）随滚过的角度沿运动方向移动，侧面时被压扁
+    val angle = rolled / t.table.ballRadius
+    val facing = kotlin.math.abs(kotlin.math.cos(angle)).toFloat()
+    val shift = (kotlin.math.sin(angle) * kotlin.math.sign(kotlin.math.cos(angle).takeIf { it != 0.0 } ?: 1.0)).toFloat()
+    val spot = c + Offset(heading.x.toFloat(), heading.y.toFloat()) * (r * shift)
+    if (ball.isCue) {
+        if (rolled > 0) drawCircle(Color(0xFFD32F2F).copy(alpha = fade), radius = r * 0.16f * (0.4f + 0.6f * facing), center = spot)
+    } else {
+        drawCircle(Color.White.copy(alpha = fade), radius = r * 0.45f * (0.45f + 0.55f * facing), center = spot)
+        if (facing > 0.45f && sinking < 0.5) {
+            val label = textMeasurer.measure(
+                ball.number.toString(),
+                TextStyle(color = Color.Black, fontSize = (r * 0.5f * facing / density).sp, fontWeight = FontWeight.Bold),
+            )
+            drawText(label, topLeft = spot - Offset(label.size.width / 2f, label.size.height / 2f))
+        }
     }
 
-    // 高光，做出球体感
+    // 高光固定在左上方（光源不动），做出球体感
     drawCircle(
         Brush.radialGradient(
-            listOf(Color.White.copy(alpha = 0.55f), Color.Transparent),
+            listOf(Color.White.copy(alpha = 0.55f * fade), Color.Transparent),
             center = c - Offset(r * 0.35f, r * 0.35f),
             radius = r * 0.7f,
         ),
