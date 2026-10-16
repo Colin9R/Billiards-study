@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+
+# Python 校验工具的独立虚拟环境
+tools/validate/.venv/
+__pycache__/
+
+# macOS
+.DS_Store
